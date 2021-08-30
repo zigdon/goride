@@ -20,7 +20,6 @@ type Client struct {
 }
 
 type RWGPS struct {
-	token    string
 	authUser *User
 	config   *Config
 	client   *Client
@@ -30,7 +29,6 @@ type Config struct {
 	Email    string
 	Password string
 	KeyName  string
-	AuthPath string
 	CfgPath  string
 }
 
@@ -74,9 +72,9 @@ func NewConfig(path string) (*Config, error) {
 		case "Auth":
 			cfg.Email = iniData.Section("Auth").Key("email").String()
 			cfg.Password = iniData.Section("Auth").Key("password").String()
-		case "Token":
-			cfg.KeyName = iniData.Section("Token").Key("name").String()
-			cfg.AuthPath = iniData.Section("Token").Key("path").String()
+			cfg.KeyName = iniData.Section("Auth").Key("name").String()
+		default:
+			log.Printf("Bad section in ini: %q", name)
 		}
 	}
 
@@ -96,15 +94,17 @@ func New(cfgPath string) (*RWGPS, error) {
 func (r *RWGPS) GetCurrentUser() (*User, error) {
 	var res string
 	var err error
-	if r.token == "" {
+	if r.authUser == nil || r.authUser.AuthToken == "" {
 		log.Printf("No auth token found, logging in...")
 		args := url.Values{
 			"email":    []string{r.config.Email},
 			"password": []string{r.config.Password},
+			"apikey":   []string{r.config.KeyName},
+			"version":  []string{"2"},
 		}
 		res, err = r.client.Get("/users/current.json", args)
 	} else {
-		res, err = r.Get("/users/current.json")
+		res, err = r.Get("/users/current.json", nil)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error getting current user: %v", err)
@@ -120,18 +120,20 @@ func (r *RWGPS) GetCurrentUser() (*User, error) {
 	return &resStruct.User, nil
 }
 
-func (r *RWGPS) Get(method string) (string, error) {
-	if r.token == "" {
+func (r *RWGPS) Get(method string, args url.Values) (string, error) {
+	if r.authUser == nil || r.authUser.AuthToken == "" {
 		err := r.Auth()
 		if err != nil {
 			return "", fmt.Errorf("can't auth: %v", err)
 		}
 	}
-	return r.client.Get(method, url.Values{
-		"apikey":     []string{r.config.KeyName},
-		"version":    []string{"2"},
-		"auth_token": []string{r.token},
-	})
+	if args == nil {
+		args = url.Values{}
+	}
+	args.Add("apikey", r.config.KeyName)
+	args.Add("version", "2")
+	args.Add("auth_token", r.authUser.AuthToken)
+	return r.client.Get(method, args)
 }
 
 func (r *RWGPS) Auth() error {

@@ -34,8 +34,33 @@ func (h simpleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, res)
 }
 
-func startServer(t *testing.T, res map[string]string) *httptest.Server {
+type functionHandler struct {
+	t        *testing.T
+	mu       *sync.Mutex
+	mappings map[string]func(string, url.Values) string
+}
+
+func (h functionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	path := r.URL.Path
+	res, ok := h.mappings[path]
+	if !ok {
+		fmt.Fprintf(w, "404 Not found: %q", path)
+		return
+	}
+
+	fmt.Fprintf(w, res(path, r.URL.Query()))
+}
+
+func startSimpleServer(t *testing.T, res map[string]string) *httptest.Server {
 	handler := simpleHandler{mappings: res, mu: &sync.Mutex{}, t: t}
+	return httptest.NewServer(handler)
+}
+
+func startServer(t *testing.T, res map[string]func(string, url.Values) string) *httptest.Server {
+	handler := functionHandler{mappings: res, mu: &sync.Mutex{}, t: t}
 	return httptest.NewServer(handler)
 }
 
@@ -45,7 +70,6 @@ func testConfig(path string) *Config {
 		Email:    "test@example.com",
 		Password: "supers3cret",
 		KeyName:  "test key",
-		AuthPath: "/path/to/file",
 	}
 }
 
@@ -65,7 +89,7 @@ func testObj(server string) *RWGPS {
 }
 
 func TestGet(t *testing.T) {
-	server := startServer(t,
+	server := startSimpleServer(t,
 		map[string]string{
 			"/":     "test",
 			"/path": "something",
@@ -110,10 +134,7 @@ func TestConfig(t *testing.T) {
 		"[Auth]",
 		"email = test@example.com",
 		"password = supers3cret",
-		"",
-		"[Token]",
 		"name = \"test key\"",
-		"path = /path/to/file",
 	}, "\n")
 
 	path := filepath.Join(t.TempDir(), "cfg.ini")
@@ -134,10 +155,72 @@ func TestConfig(t *testing.T) {
 	}
 }
 
-func TestAuth(t *testing.T) {
+func TestLiveAuth(t *testing.T) {
 	r := liveObj(t)
 	r.Auth()
-	if r.authUser == nil {
-		t.Errorf("Failed to log in")
+	if r.authUser == nil || r.authUser.AuthToken == "" {
+		t.Fatal("Failed to log in")
+	}
+	token := r.authUser.AuthToken
+	r.Auth()
+	if token != r.authUser.AuthToken {
+		t.Errorf("token changed on re-login")
+	}
+}
+
+func TestAuth(t *testing.T) {
+	f := func(p string, v url.Values) string {
+		u := `{"user":{"id":12345,"auth_token":"beef1337","name":"test_user"}}`
+		if v.Get("auth_token") == "beef1337" {
+			return u
+		} else if v.Get("email") == "test@example.com" && v.Get("password") == "supers3cret" {
+			return u
+		} else {
+			return "401 bad auth"
+		}
+	}
+	server := startServer(t,
+		map[string]func(string, url.Values) string{
+			"/users/current.json": f,
+		})
+	defer server.Close()
+
+	tests := []struct {
+		desc     string
+		password string
+		token    string
+		wantErr  bool
+	}{
+		{
+			desc:     "Good",
+			password: "supers3cret",
+		},
+		{
+			desc:  "Bad password, with good token",
+			token: "beef1337",
+		},
+		{
+			desc:     "Bad password, no token",
+			password: "12345",
+			wantErr:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			r := testObj(server.URL)
+			r.config.Password = tc.password
+			r.authUser = &User{AuthToken: tc.token}
+			r.Auth()
+			if tc.wantErr {
+				if r.authUser != nil && r.authUser.AuthToken != "" {
+					t.Fatal("Logged in badly")
+				}
+			} else {
+				if r.authUser == nil || r.authUser.AuthToken == "" {
+					t.Fatal("Failed to log in")
+				}
+			}
+		})
 	}
 }
