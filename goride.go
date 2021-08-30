@@ -44,18 +44,41 @@ type User struct {
 	Gear      []Gear
 }
 
+type Metrics struct {
+	AscentTime    int
+	DescentTime   int
+	Calories      int
+	Distance      float32
+	Duration      int
+	ElevationGain float32 `json:"ele_gain"`
+	ElevationLoss float32 `json:"ele_loss"`
+	Grade         struct {
+		Avg float32
+		Max float32
+		Min float32
+	}
+	MovingTime int
+	Speed      struct {
+		Avg float32
+		Max float32
+		Min float32
+	}
+	Stationary bool
+}
+
+type LatLng struct {
+	Lat float32
+	Lng float32
+}
+
 type Ride struct {
-	Id                                   int
-	CreateAt                             time.Time
-	Duration                             int
-	Distance                             float32
-	Description                          string
-	Name                                 string
-	ElevationGain, ElevationLoss         float32
-	MaxSpeed, AvgSpeed                   float32
-	IsStationary                         bool
-	FirstLng, FirstLat, LastLng, LastLat float32
-	SwLng, SwLat, NeLng, NeLat           float32
+	Id          int
+	CreateAt    time.Time `json:"created_at"`
+	Metrics     Metrics
+	Distance    float32
+	Description string
+	Name        string
+	BoundingBox []LatLng `json:"bounding_box"`
 }
 
 func NewConfig(path string) (*Config, error) {
@@ -147,12 +170,32 @@ func (r *RWGPS) Auth() error {
 	return nil
 }
 
-func (r *RWGPS) GetMyRides() ([]Ride, error) {
-	return r.GetRides(r.authUser.Id)
+func (r *RWGPS) GetRides(user, offset, limit int) ([]*Ride, error) {
+	return nil, nil
 }
 
-func (r *RWGPS) GetRides(id int) ([]Ride, error) {
-	return nil, nil
+func (r *RWGPS) GetRide(id int) (*Ride, error) {
+	res, err := r.Get(fmt.Sprintf("/trips/%d.json", id), nil)
+	if err != nil {
+		return nil, fmt.Errorf("error getting ride id %d: %v", id, err)
+	}
+
+	var resStruct struct {
+		Type string
+		Trip Ride
+	}
+
+	dec := json.NewDecoder(strings.NewReader(res))
+
+	if err = dec.Decode(&resStruct); err != nil {
+		return nil, fmt.Errorf("error decoding json: %v\n%s", err, res)
+	}
+
+	if resStruct.Type != "trip" {
+		return nil, fmt.Errorf("unexpected result type %q", resStruct.Type)
+	}
+
+	return &resStruct.Trip, nil
 }
 
 func (c *Client) Get(base string, args url.Values) (string, error) {

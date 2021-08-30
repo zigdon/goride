@@ -3,6 +3,7 @@ package goride
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,53 +15,55 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-type simpleHandler struct {
-	t        *testing.T
-	mu       *sync.Mutex
-	mappings map[string]string
+type rwgpsHandler struct {
+	t       *testing.T
+	mu      *sync.Mutex
+	static  map[string]string
+	dynamic map[string]func(string, url.Values) string
 }
 
-func (h simpleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h rwgpsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	path := r.URL.Path
-	res, ok := h.mappings[path]
-	if !ok {
+	res, hasStatic := h.static[path]
+	f, hasDynamic := h.dynamic[path]
+
+	if hasStatic {
+		fmt.Fprintf(w, res)
+	} else if hasDynamic {
+		fmt.Fprintf(w, f(r.URL.Path, r.URL.Query()))
+	} else {
+		w.Header().Add("status", "404 not found")
 		fmt.Fprintf(w, "404 Not found: %q", path)
-		return
 	}
-
-	fmt.Fprintf(w, res)
 }
 
-type functionHandler struct {
-	t        *testing.T
-	mu       *sync.Mutex
-	mappings map[string]func(string, url.Values) string
-}
-
-func (h functionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	path := r.URL.Path
-	res, ok := h.mappings[path]
-	if !ok {
-		fmt.Fprintf(w, "404 Not found: %q", path)
-		return
+func defaultAuth(p string, v url.Values) string {
+	u := getTestData("current.json")
+	if v.Get("auth_token") == "beef1337" {
+		return u
+	} else if v.Get("email") == "test@example.com" && v.Get("password") == "supers3cret" {
+		return u
+	} else {
+		return "401 bad auth"
 	}
-
-	fmt.Fprintf(w, res(path, r.URL.Query()))
 }
 
-func startSimpleServer(t *testing.T, res map[string]string) *httptest.Server {
-	handler := simpleHandler{mappings: res, mu: &sync.Mutex{}, t: t}
-	return httptest.NewServer(handler)
-}
-
-func startServer(t *testing.T, res map[string]func(string, url.Values) string) *httptest.Server {
-	handler := functionHandler{mappings: res, mu: &sync.Mutex{}, t: t}
+func startServer(t *testing.T, static map[string]string, dynamic map[string]func(string, url.Values) string) *httptest.Server {
+	if _, ok := dynamic["/users/current.json"]; !ok {
+		if dynamic == nil {
+			dynamic = make(map[string]func(string, url.Values) string)
+		}
+		dynamic["/users/current.json"] = defaultAuth
+	}
+	handler := rwgpsHandler{
+		static:  static,
+		dynamic: dynamic,
+		mu:      &sync.Mutex{},
+		t:       t,
+	}
 	return httptest.NewServer(handler)
 }
 
@@ -88,12 +91,22 @@ func testObj(server string) *RWGPS {
 	return &RWGPS{config: testConfig(""), client: &Client{server: server}}
 }
 
+func getTestData(name string) string {
+	data, err := ioutil.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		log.Fatalf("Error reading testdata/%s: %v", name, err)
+	}
+
+	return string(data)
+}
+
 func TestGet(t *testing.T) {
-	server := startSimpleServer(t,
+	server := startServer(t,
 		map[string]string{
 			"/":     "test",
 			"/path": "something",
-		})
+		},
+		nil)
 	defer server.Close()
 
 	tests := []struct {
@@ -169,20 +182,7 @@ func TestLiveAuth(t *testing.T) {
 }
 
 func TestAuth(t *testing.T) {
-	f := func(p string, v url.Values) string {
-		u := `{"user":{"id":12345,"auth_token":"beef1337","name":"test_user"}}`
-		if v.Get("auth_token") == "beef1337" {
-			return u
-		} else if v.Get("email") == "test@example.com" && v.Get("password") == "supers3cret" {
-			return u
-		} else {
-			return "401 bad auth"
-		}
-	}
-	server := startServer(t,
-		map[string]func(string, url.Values) string{
-			"/users/current.json": f,
-		})
+	server := startServer(t, nil, nil)
 	defer server.Close()
 
 	tests := []struct {
@@ -210,7 +210,9 @@ func TestAuth(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			r := testObj(server.URL)
 			r.config.Password = tc.password
-			r.authUser = &User{AuthToken: tc.token}
+			if tc.token != "" {
+				r.authUser = &User{AuthToken: tc.token}
+			}
 			r.Auth()
 			if tc.wantErr {
 				if r.authUser != nil && r.authUser.AuthToken != "" {
@@ -222,5 +224,28 @@ func TestAuth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGetRide(t *testing.T) {
+	ride := getTestData("trip.json")
+	server := startServer(t,
+		map[string]string{"/trips/94.json": ride},
+		nil)
+	defer server.Close()
+
+	r := testObj(server.URL)
+	_, err := r.GetRide(1)
+	if err == nil {
+		t.Errorf("didn't get an error when fetching bad ride")
+	}
+
+	got, err := r.GetRide(94)
+	if err != nil {
+		t.Errorf("unexpected error when fetching ride: %v", err)
+	}
+
+	if got == nil {
+		t.Error("missing expected ride")
 	}
 }
