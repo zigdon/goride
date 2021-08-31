@@ -104,6 +104,16 @@ func NewConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func decodeJSON(data string, obj interface{}) error {
+	dec := json.NewDecoder(strings.NewReader(data))
+
+	if err := dec.Decode(obj); err != nil {
+		return fmt.Errorf("error decoding json: %v\n%s", err, data)
+	}
+
+	return nil
+}
+
 func New(cfgPath string) (*RWGPS, error) {
 	cfg, err := NewConfig(cfgPath)
 	if err != nil {
@@ -134,13 +144,9 @@ func (r *RWGPS) GetCurrentUser() (*User, error) {
 	}
 
 	var resStruct struct{ User User }
-	dec := json.NewDecoder(strings.NewReader(res))
+	err = decodeJSON(res, &resStruct)
 
-	if err = dec.Decode(&resStruct); err != nil {
-		return nil, fmt.Errorf("error decoding json: %v\n%s", err, res)
-	}
-
-	return &resStruct.User, nil
+	return &resStruct.User, err
 }
 
 func (r *RWGPS) Get(method string, args url.Values) (string, error) {
@@ -170,8 +176,24 @@ func (r *RWGPS) Auth() error {
 	return nil
 }
 
-func (r *RWGPS) GetRides(user, offset, limit int) ([]*Ride, error) {
-	return nil, nil
+func (r *RWGPS) GetRides(user, offset, limit int) ([]*Ride, int, error) {
+	res, err := r.Get(fmt.Sprintf("/users/%d/trips.json", user),
+		url.Values{
+			"offset": []string{fmt.Sprintf("%d", offset)},
+			"limit":  []string{fmt.Sprintf("%d", limit)},
+		})
+	if err != nil {
+		return nil, 0, fmt.Errorf("error getting rides %d+%d for %d: %v", offset, limit, user, err)
+	}
+
+	var resStruct struct {
+		Count int     `json:"results_count"`
+		Rides []*Ride `json:"results"`
+	}
+
+	err = decodeJSON(res, &resStruct)
+	return resStruct.Rides, resStruct.Count, err
+
 }
 
 func (r *RWGPS) GetRide(id int) (*Ride, error) {
@@ -185,10 +207,9 @@ func (r *RWGPS) GetRide(id int) (*Ride, error) {
 		Trip Ride
 	}
 
-	dec := json.NewDecoder(strings.NewReader(res))
-
-	if err = dec.Decode(&resStruct); err != nil {
-		return nil, fmt.Errorf("error decoding json: %v\n%s", err, res)
+	err = decodeJSON(res, &resStruct)
+	if err != nil {
+		return nil, err
 	}
 
 	if resStruct.Type != "trip" {
