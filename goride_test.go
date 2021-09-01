@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -218,10 +219,16 @@ func TestAuth(t *testing.T) {
 				if r.authUser != nil && r.authUser.AuthToken != "" {
 					t.Fatal("Logged in badly")
 				}
-			} else {
-				if r.authUser == nil || r.authUser.AuthToken == "" {
-					t.Fatal("Failed to log in")
-				}
+				return
+			}
+			if r.authUser == nil || r.authUser.AuthToken == "" {
+				t.Fatal("Failed to log in")
+			}
+			if r.authUser.ID == 0 {
+				t.Errorf("Bad user id %d", r.authUser.ID)
+			}
+			if r.authUser.TotalTrips == 0 {
+				t.Errorf("Bad total trips %d", r.authUser.TotalTrips)
 			}
 		})
 	}
@@ -248,6 +255,86 @@ func TestGetRide(t *testing.T) {
 	if got == nil {
 		t.Error("missing expected ride")
 	}
+}
+
+func validRideSlim(r *RideSlim) error {
+	msg := []string{}
+	err := func(m string) { msg = append(msg, m) }
+	i := func(n int, m string) {
+		if n == 0 {
+			err("bad " + m)
+		}
+	}
+	f := func(n float32, m string) {
+		if n == 0 {
+			err("bad " + m)
+		}
+	}
+
+	i(r.ID, "ID")
+	f(r.Distance, "distance")
+	i(r.Duration, "duration")
+	f(r.ElevationGain, "elevation gain")
+	f(r.ElevationLoss, "elevation loss")
+	i(r.MovingTime, "moving time")
+	f(r.AvgSpeed, "average speed")
+	f(r.MaxSpeed, "max speed")
+
+	if r.DepartedAt.Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		err(fmt.Sprintf("unlikely started at %s", r.DepartedAt))
+	}
+
+	if len(msg) > 0 {
+		return fmt.Errorf("Invalid ride %d:\n"+strings.Join(msg, "\n"), r.ID)
+	}
+
+	return nil
+}
+
+func validRide(r *Ride) error {
+	msg := []string{}
+	err := func(m string) { msg = append(msg, m) }
+	i := func(n int, m string) {
+		if n == 0 {
+			err("bad " + m)
+		}
+	}
+	f := func(n float32, m string) {
+		if n == 0 {
+			err("bad " + m)
+		}
+	}
+
+	i(r.ID, "ID")
+	f(r.Distance, "distance")
+	if len(r.BoundingBox) > 0 {
+		f(r.BoundingBox[0].Lat, "bounding box")
+		f(r.BoundingBox[0].Lng, "bounding box")
+		f(r.BoundingBox[1].Lat, "bounding box")
+		f(r.BoundingBox[1].Lng, "bounding box")
+	} else {
+		err("missing bounding box")
+	}
+	i(r.Metrics.AscentTime, "ascent time")
+	i(r.Metrics.DescentTime, "descent time")
+	i(r.Metrics.Calories, "calories")
+	f(r.Metrics.Distance, "metrics distance")
+	f(float32(r.Metrics.Duration.Seconds()), "duration")
+	f(r.Metrics.ElevationGain, "elevation gain")
+	f(r.Metrics.ElevationLoss, "elevation loss")
+	f(r.Metrics.Grade.Avg, "average grade")
+	f(r.Metrics.Grade.Max, "max grade")
+	f(r.Metrics.Grade.Min, "min grade")
+	i(r.Metrics.MovingTime, "moving time")
+	f(r.Metrics.Speed.Avg, "average speed")
+	f(r.Metrics.Speed.Max, "max speed")
+	f(r.Metrics.Speed.Min, "min speed")
+
+	if r.Started.Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		err(fmt.Sprintf("unlikely created at %s", r.Started))
+	}
+
+	return fmt.Errorf("Invalid ride %d:\n"+strings.Join(msg, "\n"), r.ID)
 }
 
 func TestGetRides(t *testing.T) {
@@ -298,13 +385,44 @@ func TestGetRides(t *testing.T) {
 
 			var gotIDs []int
 			for _, ride := range got {
-				gotIDs = append(gotIDs, ride.Id)
+				if err := validRideSlim(ride); err != nil {
+					t.Errorf("Bad ride data: %v", err)
+				}
+				gotIDs = append(gotIDs, ride.ID)
 			}
 
 			if diff := cmp.Diff(gotIDs, tc.wantIDs); diff != "" {
 				t.Errorf("bad ride IDs: -want +got\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestGetCurrentUser(t *testing.T) {
+	server := startServer(t, nil, nil)
+	defer server.Close()
+	r := testObj(server.URL)
+
+	u, err := r.GetCurrentUser()
+	if err != nil {
+		t.Fatalf("couldn't get user: %v", err)
+	}
+
+	want := &User{
+		ID:         1268590,
+		Name:       "zigdon",
+		TotalTrips: 3073,
+		AuthToken:  "ffffff",
+		Gear: []Gear{
+			{239758, "Surly"},
+			{255732, "TCR"},
+			{256907, "Folder"},
+			{256908, "Surly w/Trailer"},
+		},
+	}
+
+	if diff := cmp.Diff(want, u); diff != "" {
+		t.Errorf("bad user: -want +got\n%s", diff)
 	}
 
 }
