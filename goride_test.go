@@ -77,17 +77,6 @@ func testConfig(path string) *Config {
 	}
 }
 
-func liveObj(t *testing.T) *RWGPS {
-	t.Helper()
-	r, err := New("/home/zigdon/.config/ridewithgps.ini")
-	if err != nil {
-		t.Fatalf("can't load live config: %v", err)
-	}
-	r.client.server = "https://ridewithgps.com"
-	t.Logf("server set to %q", r.client.server)
-	return r
-}
-
 func testObj(server string) *RWGPS {
 	return &RWGPS{config: testConfig(""), client: &Client{server: server}}
 }
@@ -166,19 +155,6 @@ func TestConfig(t *testing.T) {
 
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Unexpected diff: -want +got\n%s", diff)
-	}
-}
-
-func TestLiveAuth(t *testing.T) {
-	r := liveObj(t)
-	r.Auth()
-	if r.authUser == nil || r.authUser.AuthToken == "" {
-		t.Fatal("Failed to log in")
-	}
-	token := r.authUser.AuthToken
-	r.Auth()
-	if token != r.authUser.AuthToken {
-		t.Errorf("token changed on re-login")
 	}
 }
 
@@ -289,52 +265,6 @@ func validRideSlim(r *RideSlim) error {
 	}
 
 	return nil
-}
-
-func validRide(r *Ride) error {
-	msg := []string{}
-	err := func(m string) { msg = append(msg, m) }
-	i := func(n int, m string) {
-		if n == 0 {
-			err("bad " + m)
-		}
-	}
-	f := func(n float32, m string) {
-		if n == 0 {
-			err("bad " + m)
-		}
-	}
-
-	i(r.ID, "ID")
-	f(r.Distance, "distance")
-	if len(r.BoundingBox) > 0 {
-		f(r.BoundingBox[0].Lat, "bounding box")
-		f(r.BoundingBox[0].Lng, "bounding box")
-		f(r.BoundingBox[1].Lat, "bounding box")
-		f(r.BoundingBox[1].Lng, "bounding box")
-	} else {
-		err("missing bounding box")
-	}
-	i(r.Metrics.AscentTime, "ascent time")
-	i(r.Metrics.DescentTime, "descent time")
-	i(r.Metrics.Calories, "calories")
-	f(r.Metrics.Distance, "metrics distance")
-	f(float32(r.Metrics.Duration.Seconds()), "duration")
-	f(r.Metrics.ElevationGain, "elevation gain")
-	f(r.Metrics.ElevationLoss, "elevation loss")
-	f(r.Metrics.Grade.Avg, "average grade")
-	f(r.Metrics.Grade.Max, "max grade")
-	f(r.Metrics.Grade.Min, "min grade")
-	i(r.Metrics.MovingTime, "moving time")
-	f(r.Metrics.Speed.Avg, "average speed")
-	f(r.Metrics.Speed.Max, "max speed")
-	f(r.Metrics.Speed.Min, "min speed")
-
-	if r.Started.Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) {
-		err(fmt.Sprintf("unlikely created at %s", r.Started))
-	}
-
-	return fmt.Errorf("Invalid ride %d:\n"+strings.Join(msg, "\n"), r.ID)
 }
 
 func TestGetRides(t *testing.T) {
