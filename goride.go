@@ -1,8 +1,6 @@
 package goride
 
 import (
-	// "bytes"
-	// "encoding/json"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
